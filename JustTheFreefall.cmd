@@ -22,7 +22,7 @@ Add-Type -AssemblyName System.Windows.Forms
 
 # --- SETTINGS (edit these) ---
 $trimStart    = 10      # Seconds to skip from START
-$keepDuration = 75      # Seconds to keep after trimStart
+$keepDuration = 80      # Seconds to keep after trimStart
 $suffix       = "_trim" # Appended to output filenames
 
 # Output folder options:
@@ -60,7 +60,7 @@ if ($files.Count -eq 0) {
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Multiselect = $true
     $dialog.Title = "Select GoPro videos to trim"
-    $dialog.Filter = "Video Files|*.mp4;*.MP4|All Files|*.*"
+    $dialog.Filter = "Video Files|*.mp4|All Files|*.*"
     if (Test-Path $startDir) { $dialog.InitialDirectory = $startDir }
 
     if ($dialog.ShowDialog() -ne "OK") {
@@ -117,78 +117,64 @@ $skipped = 0
 $failed  = 0
 
 foreach ($filePath in $files) {
-    $file    = Get-Item $filePath
-    $destDir = if ($outDir) { $outDir } else { $file.DirectoryName }
-    $output  = Join-Path $destDir "$($file.BaseName)${suffix}$($file.Extension)"
+    try {
+        $file    = Get-Item $filePath
+        $destDir = if ($outDir) { $outDir } else { $file.DirectoryName }
+        $output  = Join-Path $destDir "$($file.BaseName)${suffix}$($file.Extension)"
 
-    Write-Host "  $($file.Name)" -NoNewline -ForegroundColor Cyan
+        Write-Host "  $($file.Name)" -NoNewline -ForegroundColor Cyan
 
-    if (Test-Path $output) {
-        Write-Host " -> skipped (output exists)" -ForegroundColor Yellow
-        $skipped++
-        continue
-    }
+        if (Test-Path $output) {
+            Write-Host " -> skipped (output exists)" -ForegroundColor Yellow
+            $skipped++
+            continue
+        }
 
-    $args = @(
-        "-n"
-        "-v", "quiet"
-        "-progress", "$env:TEMP\ffprog.txt"
-        "-ss", $trimStart
-        "-i", $filePath
-        "-t", $keepDuration
-        "-c", "copy"
-        "-map", "0:v", "-map", "0:a"
-        "-map_chapters", "-1"
-        "-reset_timestamps", "1"
-        "-avoid_negative_ts", "make_zero"
-        $output
-    )
+        $ffArgs = @(
+            "-n"
+            "-v", "quiet"
+            "-ss", $trimStart
+            "-i", $filePath
+            "-t", $keepDuration
+            "-c", "copy"
+            "-map", "0:v", "-map", "0:a"
+            "-map_chapters", "-1"
+            "-reset_timestamps", "1"
+            "-avoid_negative_ts", "make_zero"
+            $output
+        )
 
-    $targetUs = [long]$keepDuration * 1000000
-    if (Test-Path "$env:TEMP\ffprog.txt") { Remove-Item "$env:TEMP\ffprog.txt" -Force }
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        $proc = Start-Process -FilePath $ffmpeg -ArgumentList $ffArgs -NoNewWindow -PassThru -RedirectStandardError "$env:TEMP\fferr.txt"
+        $null = $proc.Handle  # Force handle cache so ExitCode survives after exit
 
-    $sw = [Diagnostics.Stopwatch]::StartNew()
-    $proc = Start-Process -FilePath $ffmpeg -ArgumentList $args -NoNewWindow -PassThru -RedirectStandardError "$env:TEMP\fferr.txt"
-    $barLen = 20
-
-    while (-not $proc.HasExited) {
-        Start-Sleep -Milliseconds 250
+        while (-not $proc.HasExited) {
+            Start-Sleep -Milliseconds 250
+            $elapsed = $sw.Elapsed.ToString("mm\:ss")
+            Write-Host "`r  $($file.Name)  $elapsed" -NoNewline -ForegroundColor Cyan
+        }
+        $sw.Stop()
         $elapsed = $sw.Elapsed.ToString("mm\:ss")
-        if (Test-Path "$env:TEMP\ffprog.txt") {
-            $tail = Get-Content "$env:TEMP\ffprog.txt" -Tail 15 -ErrorAction SilentlyContinue
-            $lastUs = $tail | Select-String -Pattern '^out_time_us=(\d+)' | Select-Object -Last 1
-            if ($lastUs) {
-                $us = [long]$lastUs.Matches[0].Groups[1].Value
-                $pct = [math]::Min(100, [int]($us * 100 / $targetUs))
-                $filled = [math]::Floor($pct * $barLen / 100)
-                $empty = $barLen - $filled
-                $bar = ("$([char]0x2588)" * $filled) + ("$([char]0x2591)" * $empty)
-                Write-Host "`r  $($file.Name) [$bar] $pct% $elapsed  " -NoNewline -ForegroundColor Cyan
-            }
-        }
-    }
-    $proc.WaitForExit()
-    $sw.Stop()
-    $elapsed = $sw.Elapsed.ToString("mm\:ss")
 
-    if ($proc.ExitCode -eq 0) {
-        $bar = "$([char]0x2588)" * $barLen
-        Write-Host "`r  $($file.Name) [$bar] 100% $elapsed  " -NoNewline -ForegroundColor Cyan
-        Write-Host ""
-        Write-Host "  -> $($file.BaseName)${suffix}$($file.Extension)" -ForegroundColor Green
-        $trimmed++
-    } else {
-        $errMsg = ""
-        if (Test-Path "$env:TEMP\fferr.txt") {
-            $errMsg = (Get-Content "$env:TEMP\fferr.txt" -Tail 3 -ErrorAction SilentlyContinue) -join " "
+        if ($proc.ExitCode -eq 0) {
+            Write-Host "`r  $($file.Name)  $elapsed -> $($file.BaseName)${suffix}$($file.Extension)" -ForegroundColor Green
+            $trimmed++
+        } else {
+            $errMsg = ""
+            if (Test-Path "$env:TEMP\fferr.txt") {
+                $errMsg = (Get-Content "$env:TEMP\fferr.txt" -Tail 3 -ErrorAction SilentlyContinue) -join " "
+            }
+            Write-Host "`r  $($file.Name)  $elapsed -> FAILED (exit $($proc.ExitCode))     " -ForegroundColor Red
+            if ($errMsg) { Write-Host "     $errMsg" -ForegroundColor DarkRed }
+            if (Test-Path $output) { Remove-Item $output -Force -ErrorAction SilentlyContinue }
+            $failed++
         }
-        Write-Host "`r  $($file.Name) -> FAILED (exit $($proc.ExitCode))                                  " -ForegroundColor Red
-        if ($errMsg) { Write-Host "     $errMsg" -ForegroundColor DarkRed }
-        if (Test-Path $output) { Remove-Item $output -Force -ErrorAction SilentlyContinue }
+
+        Remove-Item "$env:TEMP\fferr.txt" -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "`r  $filePath -> ERROR: $($_.Exception.Message)     " -ForegroundColor Red
         $failed++
     }
-
-    Remove-Item "$env:TEMP\ffprog.txt", "$env:TEMP\fferr.txt" -Force -ErrorAction SilentlyContinue
 }
 
 $batchSw.Stop()
