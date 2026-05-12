@@ -14,25 +14,16 @@ pause
 exit /b
 #>
 
-# --- GOPRO TRIMMER ---
-# Drag files onto this script, or double-click to open a file picker.
+# --- JUST THE FREEFALL ---
+# Drag MP4 files onto this script, or double-click to open a file picker.
 # Place ffmpeg.exe in the same folder.
 
 Add-Type -AssemblyName System.Windows.Forms
 
 # --- SETTINGS (edit these) ---
 $trimStart    = 10      # Seconds to skip from START
-$keepDuration = 80      # Seconds to keep after trimStart
+$keepDuration = 75      # Seconds to keep after trimStart
 $suffix       = "_trim" # Appended to output filenames
-
-# Output folder options:
-#   $outputPicker = $true   -> pop up a folder picker each run
-#   $outputPicker = $false  -> use $outputDefault automatically
-#   $outputDefault = ""     -> save alongside the source files
-#   $outputDefault = "C:\Videos\Trimmed"  -> save to a fixed folder
-#   $outputDefault = "Trimmed"            -> relative to the script folder
-$outputPicker  = $true
-$outputDefault = ""
 # -----------------------------
 
 $scriptDir = $PWD.Path
@@ -51,17 +42,10 @@ if ($env:DROPPED_FILES) {
 }
 
 if ($files.Count -eq 0) {
-    $dcim = Join-Path $scriptDir "DCIM"
-    $startDir = $dcim
-    if (Test-Path $dcim) {
-        $goProDir = Get-ChildItem $dcim -Directory -Filter "*GOPRO" | Sort-Object Name | Select-Object -Last 1
-        if ($goProDir) { $startDir = $goProDir.FullName }
-    }
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Multiselect = $true
-    $dialog.Title = "Select GoPro videos to trim"
+    $dialog.Title = "Select videos to trim"
     $dialog.Filter = "Video Files|*.mp4|All Files|*.*"
-    if (Test-Path $startDir) { $dialog.InitialDirectory = $startDir }
 
     if ($dialog.ShowDialog() -ne "OK") {
         Write-Host "Cancelled." -ForegroundColor Gray
@@ -70,45 +54,25 @@ if ($files.Count -eq 0) {
     $files = $dialog.FileNames
 }
 
-# --- Resolve output folder ---
-$outDir = ""
+# --- Output folder picker ---
+$folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
+$folderDialog.Description = "Select output folder for trimmed files"
+$folderDialog.ShowNewFolderButton = $true
+$folderDialog.RootFolder = [Environment+SpecialFolder]::MyComputer
 
-# Resolve default path (could be relative to script dir)
-$resolvedDefault = ""
-if ($outputDefault) {
-    if ([IO.Path]::IsPathRooted($outputDefault)) {
-        $resolvedDefault = $outputDefault
-    } else {
-        $resolvedDefault = Join-Path $scriptDir $outputDefault
-    }
+if ($folderDialog.ShowDialog() -ne "OK") {
+    Write-Host "Cancelled." -ForegroundColor Gray
+    return
 }
+$outDir = $folderDialog.SelectedPath
 
-if ($outputPicker) {
-    $folderDialog = New-Object System.Windows.Forms.FolderBrowserDialog
-    $folderDialog.Description = "Select output folder for trimmed files"
-    $folderDialog.ShowNewFolderButton = $true
-    $folderDialog.RootFolder = [Environment+SpecialFolder]::MyComputer
-    if ($resolvedDefault -and (Test-Path $resolvedDefault)) {
-        $folderDialog.SelectedPath = $resolvedDefault
-    }
-    if ($folderDialog.ShowDialog() -eq "OK") {
-        $outDir = $folderDialog.SelectedPath
-    } else {
-        Write-Host "Cancelled." -ForegroundColor Gray
-        return
-    }
-} elseif ($resolvedDefault) {
-    $outDir = $resolvedDefault
-}
-# If $outDir is still empty, outputs go alongside source files (per-file below)
-
-if ($outDir -and -not (Test-Path $outDir)) {
+if (-not (Test-Path $outDir)) {
     New-Item -ItemType Directory -Path $outDir -Force | Out-Null
 }
 
 # --- Trim ---
 Write-Host "`nTrimming $($files.Count) file(s): skip ${trimStart}s, keep ${keepDuration}s" -ForegroundColor White
-if ($outDir) { Write-Host "Output:  $outDir" -ForegroundColor White }
+Write-Host "Output:  $outDir" -ForegroundColor White
 Write-Host ""
 
 $batchSw = [Diagnostics.Stopwatch]::StartNew()
@@ -118,9 +82,8 @@ $failed  = 0
 
 foreach ($filePath in $files) {
     try {
-        $file    = Get-Item $filePath
-        $destDir = if ($outDir) { $outDir } else { $file.DirectoryName }
-        $output  = Join-Path $destDir "$($file.BaseName)${suffix}$($file.Extension)"
+        $file   = Get-Item $filePath
+        $output = Join-Path $outDir "$($file.BaseName)${suffix}$($file.Extension)"
 
         Write-Host "  $($file.Name)" -NoNewline -ForegroundColor Cyan
 
